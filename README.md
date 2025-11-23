@@ -1,20 +1,38 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# MindSpace 笔记 & 待办
 
-# Run and deploy your AI Studio app
+一款专注于极简设计的笔记和待办事项应用，专为移动端优化。
 
-This contains everything you need to run your app locally.
+## 功能特性
 
-View your app in AI Studio: https://ai.studio/apps/drive/1CNE91QrLlj94jrzChQfXc8P5W9g7PcBW
+- ✍️ **笔记管理** - 创建、编辑和组织你的笔记
+- ✅ **待办事项** - 跟踪和管理你的任务
+- 📱 **移动优先** - 专为 Android 移动设备优化的响应式设计
+- 🌙 **深色模式** - 支持浅色和深色主题
+- 💾 **本地存储** - 所有数据保存在浏览器本地，无需网络
+- 📝 **Markdown 支持** - 支持 Markdown 格式预览
+- 📤 **导出功能** - 导出笔记为 TXT 或 PDF 格式
+- ⭐ **收藏功能** - 标记重要的笔记
 
-## Run Locally
+## 本地运行
 
-**Prerequisites:**  Node.js
+**前置要求:** Node.js
 
+1. 安装依赖:
+   ```bash
+   npm install
+   ```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+2. 运行应用:
+   ```bash
+   npm run dev
+   ```
+
+3. 在浏览器中打开 `http://localhost:3000`
+
+## 构建生产版本
+
+```bash
+npm run build
+```
+
+构建产物将生成在 `dist` 目录中。

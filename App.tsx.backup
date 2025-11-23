@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Note, Todo } from './types';
-
+import { Note, AIActionType, AIState, CustomPrompt } from './types';
+import { performAIAction } from './services/geminiService';
 import { marked } from 'marked';
 import JSZip from 'jszip';
 import { 
@@ -8,7 +8,7 @@ import {
   TrashIcon, 
   SearchIcon, 
   StarIcon, 
- 
+  WandIcon, 
   MenuIcon,
   ChevronLeftIcon,
   EyeIcon,
@@ -20,9 +20,8 @@ import {
   SortIcon,
   SunIcon,
   MoonIcon,
-
-  XIcon,
-  CheckIcon
+  SettingsIcon,
+  XIcon
 } from './components/Icons';
 
 // --- Constants & Helper Functions ---
@@ -30,7 +29,7 @@ import {
 const generateId = () => Math.random().toString(36).substr(2, 9);
 const STORAGE_KEY = 'mindspace_notes_v1';
 const THEME_KEY = 'mindspace_theme_v1';
-const TODOS_KEY = 'mindspace_todos_v1';
+const CUSTOM_PROMPTS_KEY = 'mindspace_custom_prompts_v1';
 
 // Type for html2pdf global variable
 declare var html2pdf: any;
@@ -68,18 +67,27 @@ interface SortConfig {
 export default function App() {
   // --- State ---
   const [notes, setNotes] = useState<Note[]>([]);
-  const [todos, setTodos] = useState<Todo[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true); // For mobile responsive
+  const [aiState, setAiState] = useState<AIState>({ isLoading: false, error: null });
+  const [showAiMenu, setShowAiMenu] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false); // For single note export
   const [showGlobalMenu, setShowGlobalMenu] = useState(false); // For "Export All"
   const [showSortMenu, setShowSortMenu] = useState(false);
-  const [viewFilter, setViewFilter] = useState<'all' | 'favorites' | 'todos'>('all');
+  const [viewFilter, setViewFilter] = useState<'all' | 'favorites'>('all');
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'updatedAt', direction: 'desc' });
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
-  const [newTodoText, setNewTodoText] = useState('');
+  
+  // Custom Prompts
+  const [customPrompts, setCustomPrompts] = useState<CustomPrompt[]>([]);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  
+  // New Prompt Input State
+  const [newPromptName, setNewPromptName] = useState('');
+  const [newPromptTemplate, setNewPromptTemplate] = useState('');
+  const [newPromptAction, setNewPromptAction] = useState<'replace' | 'append'>('append');
   
   // History State: map noteId -> { past[], future[] }
   const [history, setHistory] = useState<Record<string, HistoryState>>({});
@@ -111,7 +119,7 @@ export default function App() {
   // Load Notes & Prompts from local storage on mount
   useEffect(() => {
     const savedNotes = localStorage.getItem(STORAGE_KEY);
-    const savedTodos = localStorage.getItem(TODOS_KEY);
+    const savedPrompts = localStorage.getItem(CUSTOM_PROMPTS_KEY);
 
     if (savedNotes) {
       try {
@@ -140,11 +148,11 @@ export default function App() {
       setSelectedNoteId(initialNote.id);
     }
 
-    if (savedTodos) {
+    if (savedPrompts) {
       try {
-        setTodos(JSON.parse(savedTodos));
+        setCustomPrompts(JSON.parse(savedPrompts));
       } catch (e) {
-        console.error("Failed to load todos", e);
+        console.error("Failed to load custom prompts", e);
       }
     }
   }, []);
@@ -157,8 +165,8 @@ export default function App() {
   }, [notes]);
 
   useEffect(() => {
-    localStorage.setItem(TODOS_KEY, JSON.stringify(todos));
-  }, [todos]);
+    localStorage.setItem(CUSTOM_PROMPTS_KEY, JSON.stringify(customPrompts));
+  }, [customPrompts]);
 
   // Reset typing timer when switching notes
   useEffect(() => {
@@ -228,26 +236,6 @@ export default function App() {
     return result;
   }, [notes, searchQuery, viewFilter, sortConfig]);
 
-  const filteredTodos = useMemo(() => {
-    let result = [...todos];
-    
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(t => t.text.toLowerCase().includes(q));
-    }
-
-    // Sort by updatedAt descending, but show incomplete todos first
-    result.sort((a, b) => {
-      if (a.completed !== b.completed) {
-        return a.completed ? 1 : -1;
-      }
-      return b.updatedAt - a.updatedAt;
-    });
-
-    return result;
-  }, [todos, searchQuery]);
-
-
   const selectedNote = useMemo(
     () => notes.find((n) => n.id === selectedNoteId) || null,
     [notes, selectedNoteId]
@@ -271,7 +259,6 @@ export default function App() {
     };
     setNotes((prev) => [newNote, ...prev]);
     setSelectedNoteId(newNote.id);
-    setViewFilter('all');
     setIsPreviewMode(false); // Switch to edit mode for new note
     // On mobile, close sidebar after creating/selecting
     if (window.innerWidth < 768) setIsSidebarOpen(false);
@@ -403,40 +390,70 @@ export default function App() {
     updateNoteState(selectedNote.id, { title: next.title, content: next.content });
   };
 
-  // --- Export Functions ---
+  const handleAiAction = async (action: AIActionType, customPrompt?: CustomPrompt) => {
+    if (!selectedNote) return;
+    setShowAiMenu(false);
+    setAiState({ isLoading: true, error: null });
 
-  // --- Todo Handlers ---
+    // Save state before AI modification
+    saveToHistory(selectedNote);
+    // Force reset typing timer
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
 
-  const handleAddTodo = () => {
-    if (!newTodoText.trim()) return;
-    const now = Date.now();
-    const newTodo: Todo = {
-      id: generateId(),
-      text: newTodoText.trim(),
-      completed: false,
-      createdAt: now,
-      updatedAt: now
-    };
-    setTodos(prev => [newTodo, ...prev]);
-    setNewTodoText('');
-  };
+    try {
+      const result = await performAIAction(
+        action, 
+        selectedNote.content, 
+        customPrompt?.template
+      );
 
-  const handleToggleTodo = (id: string) => {
-    setTodos(prev => prev.map(t => 
-      t.id === id ? { ...t, completed: !t.completed, updatedAt: Date.now() } : t
-    ));
-  };
+      if (action === AIActionType.GENERATE_TITLE) {
+        updateNoteState(selectedNote.id, { title: result });
+      } else if (action === AIActionType.SUMMARIZE) {
+        const summaryBlock = `\n\n--- 摘要 ---\n${result}`;
+        updateNoteState(selectedNote.id, { content: selectedNote.content + summaryBlock });
+      } else if (action === AIActionType.CONTINUE_WRITING) {
+        updateNoteState(selectedNote.id, { content: selectedNote.content + ' ' + result });
+      } else if (action === AIActionType.FIX_GRAMMAR) {
+        updateNoteState(selectedNote.id, { content: result });
+      } else if (action === AIActionType.CUSTOM && customPrompt) {
+        if (customPrompt.actionType === 'replace') {
+           updateNoteState(selectedNote.id, { content: result });
+        } else {
+           updateNoteState(selectedNote.id, { content: selectedNote.content + '\n\n' + result });
+        }
+      }
 
-  const handleDeleteTodo = (id: string) => {
-    setTodos(prev => prev.filter(t => t.id !== id));
-  };
-
-  const handleClearCompletedTodos = () => {
-    if (window.confirm('确定要删除所有已完成的待办事项吗？')) {
-      setTodos(prev => prev.filter(t => !t.completed));
+    } catch (err: any) {
+      setAiState({ isLoading: false, error: 'AI 请求失败，请检查 API Key。' });
+      setTimeout(() => setAiState(prev => ({ ...prev, error: null })), 3000);
+    } finally {
+      setAiState(prev => ({ ...prev, isLoading: false }));
     }
   };
 
+  const handleAddCustomPrompt = () => {
+    if (!newPromptName.trim() || !newPromptTemplate.trim()) return;
+    const newPrompt: CustomPrompt = {
+      id: generateId(),
+      name: newPromptName,
+      template: newPromptTemplate,
+      actionType: newPromptAction
+    };
+    setCustomPrompts(prev => [...prev, newPrompt]);
+    setNewPromptName('');
+    setNewPromptTemplate('');
+    setNewPromptAction('append');
+  };
+
+  const handleDeleteCustomPrompt = (id: string) => {
+    setCustomPrompts(prev => prev.filter(p => p.id !== id));
+  };
+
+  // --- Export Functions ---
 
   const handleExportSingleTxt = () => {
     if (!selectedNote) return;
@@ -565,9 +582,8 @@ export default function App() {
                   {theme === 'light' ? <MoonIcon className="w-5 h-5" /> : <SunIcon className="w-5 h-5" />}
                 </button>
 
-                {/* Sort Menu (only for notes view) */}
-                {viewFilter !== 'todos' && (
-                  <div className="relative">
+                {/* Sort Menu */}
+                <div className="relative">
                    <button 
                      onClick={() => setShowSortMenu(!showSortMenu)}
                      className={`p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 mr-1 transition-colors ${showSortMenu ? 'bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}
@@ -604,8 +620,7 @@ export default function App() {
                 </div>
 
                 {/* Global Menu for Export All */}
-                {viewFilter !== 'todos' && (
-                  <div className="relative">
+                <div className="relative">
                    <button 
                      onClick={() => setShowGlobalMenu(!showGlobalMenu)}
                      className={`p-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-800 mr-2 transition-colors ${showGlobalMenu ? 'bg-gray-200 dark:bg-gray-800 text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-400'}`}
@@ -648,7 +663,7 @@ export default function App() {
              <SearchIcon className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
              <input
                type="text"
-               placeholder={viewFilter === 'todos' ? "搜索待办..." : "搜索笔记..."}
+               placeholder="搜索笔记..."
                className="w-full pl-9 pr-4 py-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all placeholder-gray-400 dark:placeholder-gray-500"
                value={searchQuery}
                onChange={(e) => setSearchQuery(e.target.value)}
@@ -669,171 +684,57 @@ export default function App() {
              >
                收藏
              </button>
-             <button 
-               onClick={() => { setViewFilter('todos'); setSelectedNoteId(null); }}
-               className={`flex-1 text-xs font-medium py-1.5 rounded-md transition-colors ${viewFilter === 'todos' ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}`}
-             >
-               待办
-             </button>
            </div>
         </div>
 
-        {/* List Area */}
+        {/* Note List */}
         <div className="flex-1 overflow-y-auto">
-          {viewFilter === 'todos' ? (
-            // Todos View
-            <>
-              {filteredTodos.length === 0 ? (
-                <div className="p-8 text-center text-gray-400 text-sm">
-                  {searchQuery ? '没有找到待办事项。' : '还没有待办事项。'}
-                </div>
-              ) : (
-                <ul>
-                  {filteredTodos.map((todo) => (
-                    <li
-                      key={todo.id}
-                      className="group p-4 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-850 transition-colors"
-                    >
-                      <div className="flex items-start gap-3">
-                        <button
-                          onClick={() => handleToggleTodo(todo.id)}
-                          className={`flex-shrink-0 mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                            todo.completed 
-                              ? 'bg-blue-600 border-blue-600' 
-                              : 'border-gray-300 dark:border-gray-600 hover:border-blue-500'
-                          }`}
-                        >
-                          {todo.completed && <CheckIcon className="w-3 h-3 text-white" />}
-                        </button>
-                        <div className="flex-1 min-w-0">
-                          <p className={`text-sm break-words ${
-                            todo.completed 
-                              ? 'text-gray-400 dark:text-gray-500 line-through' 
-                              : 'text-gray-700 dark:text-gray-300'
-                          }`}>
-                            {todo.text}
-                          </p>
-                          <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">
-                            {formatDate(todo.updatedAt)}
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => handleDeleteTodo(todo.id)}
-                          className="flex-shrink-0 opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-500 rounded transition-all"
-                        >
-                          <TrashIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {/* Clear completed button */}
-              {todos.some(t => t.completed) && (
-                <div className="p-4 border-t border-gray-200 dark:border-gray-800">
-                  <button
-                    onClick={handleClearCompletedTodos}
-                    className="w-full py-2 text-sm text-gray-600 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-                  >
-                    清除已完成
-                  </button>
-                </div>
-              )}
-            </>
+          {filteredNotes.length === 0 ? (
+            <div className="p-8 text-center text-gray-400 text-sm">
+              没有找到笔记。
+            </div>
           ) : (
-            // Notes View
-            <>
-              {filteredNotes.length === 0 ? (
-                <div className="p-8 text-center text-gray-400 text-sm">
-                  没有找到笔记。
-                </div>
-              ) : (
-                <ul>
-                  {filteredNotes.map((note) => (
-                    <li
-                      key={note.id}
-                      onClick={() => {
-                        setSelectedNoteId(note.id);
-                        setIsPreviewMode(false); 
-                        if (window.innerWidth < 768) setIsSidebarOpen(false);
-                      }}
-                      className={`group relative p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-850 transition-colors ${
-                        selectedNoteId === note.id ? 'bg-white dark:bg-gray-800 border-l-4 border-l-blue-500 shadow-sm' : 'border-l-4 border-l-transparent'
-                      }`}
+            <ul>
+              {filteredNotes.map((note) => (
+                <li
+                  key={note.id}
+                  onClick={() => {
+                    setSelectedNoteId(note.id);
+                    setIsPreviewMode(false); 
+                    if (window.innerWidth < 768) setIsSidebarOpen(false);
+                  }}
+                  className={`group relative p-4 border-b border-gray-100 dark:border-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-850 transition-colors ${
+                    selectedNoteId === note.id ? 'bg-white dark:bg-gray-800 border-l-4 border-l-blue-500 shadow-sm' : 'border-l-4 border-l-transparent'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-1">
+                    <h3 className={`text-sm font-semibold truncate pr-6 ${selectedNoteId === note.id ? 'text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>
+                      {note.title || '无标题笔记'}
+                    </h3>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 h-8 mb-2">
+                    {note.content || '暂无内容...'}
+                  </p>
+                  <div className="flex justify-between items-center mt-1">
+                     <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">
+                      {formatDate(note.updatedAt)}
+                    </span>
+                    <button
+                      onClick={(e) => handleToggleFavorite(note.id, e)}
+                      className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${note.isFavorite ? 'text-yellow-400' : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100'}`}
                     >
-                      <div className="flex justify-between items-start mb-1">
-                        <h3 className={`text-sm font-semibold truncate pr-6 ${selectedNoteId === note.id ? 'text-gray-900 dark:text-white' : 'text-gray-700 dark:text-gray-300'}`}>
-                          {note.title || '无标题笔记'}
-                        </h3>
-                      </div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 line-clamp-2 h-8 mb-2">
-                        {note.content || '暂无内容...'}
-                      </p>
-                      <div className="flex justify-between items-center mt-1">
-                         <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">
-                          {formatDate(note.updatedAt)}
-                        </span>
-                        <button
-                          onClick={(e) => handleToggleFavorite(note.id, e)}
-                          className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${note.isFavorite ? 'text-yellow-400' : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100'}`}
-                        >
-                          <StarIcon className="w-4 h-4" fill={note.isFavorite} />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
+                      <StarIcon className="w-4 h-4" fill={note.isFavorite} />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full bg-white dark:bg-gray-950 relative transition-colors duration-200">        {viewFilter === 'todos' ? (
-          // Todo Input Area
-          <div className="flex-1 flex flex-col p-8">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">待办事项</h2>
-            
-            {/* Add Todo Input */}
-            <div className="mb-6">
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newTodoText}
-                  onChange={(e) => setNewTodoText(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleAddTodo()}
-                  placeholder="添加新的待办事项..."
-                  className="flex-1 px-4 py-3 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500"
-                />
-                <button
-                  onClick={handleAddTodo}
-                  disabled={!newTodoText.trim()}
-                  className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
-                >
-                  添加
-                </button>
-              </div>
-            </div>
-
-            {/* Todo Stats */}
-            <div className="flex gap-4 text-sm text-gray-600 dark:text-gray-400 mb-4">
-              <span>总计: {todos.length}</span>
-              <span>待完成: {todos.filter(t => !t.completed).length}</span>
-              <span>已完成: {todos.filter(t => t.completed).length}</span>
-            </div>
-
-            {/* Todo List (in main area for better mobile view) */}
-            <div className="flex-1 overflow-y-auto">
-              {filteredTodos.length === 0 && searchQuery === '' ? (
-                <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-                  <CheckIcon className="w-16 h-16 mb-4" />
-                  <p className="text-lg">开始添加你的第一个待办事项！</p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : 
+      <div className="flex-1 flex flex-col h-full bg-white dark:bg-gray-950 relative transition-colors duration-200">
         {selectedNote ? (
           <>
             {/* Toolbar */}
@@ -843,6 +744,18 @@ export default function App() {
                </div>
                
                <div className="flex items-center space-x-2">
+                 {/* AI Loading Indicator */}
+                 {aiState.isLoading && (
+                   <div className="flex items-center text-indigo-600 dark:text-indigo-400 text-xs font-medium mr-4 animate-pulse">
+                     <WandIcon className="w-3 h-3 mr-1" />
+                     思考中...
+                   </div>
+                 )}
+                 {aiState.error && (
+                   <div className="text-red-500 text-xs font-medium mr-4">
+                     {aiState.error}
+                   </div>
+                 )}
 
                  {/* Undo / Redo */}
                  <div className="flex items-center border-r border-gray-200 dark:border-gray-800 pr-2 mr-1 space-x-1">
@@ -902,6 +815,79 @@ export default function App() {
                     )}
                  </div>
 
+                 {/* AI Menu */}
+                 <div className="relative">
+                    <button 
+                      onClick={() => setShowAiMenu(!showAiMenu)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-md transition-colors"
+                      disabled={aiState.isLoading}
+                    >
+                      <WandIcon className="w-3.5 h-3.5" />
+                      AI 助手
+                    </button>
+                    
+                    {showAiMenu && (
+                      <div className="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-100 dark:border-gray-700 z-50 overflow-hidden">
+                        <div className="py-1 max-h-96 overflow-y-auto">
+                          <div className="px-4 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">基础功能</div>
+                          <button 
+                            onClick={() => handleAiAction(AIActionType.GENERATE_TITLE)}
+                            className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          >
+                            生成标题
+                          </button>
+                          <button 
+                            onClick={() => handleAiAction(AIActionType.FIX_GRAMMAR)}
+                            className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          >
+                            修正语法
+                          </button>
+                          <button 
+                            onClick={() => handleAiAction(AIActionType.SUMMARIZE)}
+                            className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          >
+                            生成摘要
+                          </button>
+                          <button 
+                            onClick={() => handleAiAction(AIActionType.CONTINUE_WRITING)}
+                            className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          >
+                            智能续写
+                          </button>
+
+                          <div className="border-t border-gray-100 dark:border-gray-700 my-1"></div>
+                          
+                          <div className="px-4 py-1 text-xs font-semibold text-gray-400 uppercase flex justify-between items-center">
+                            <span>自定义指令</span>
+                            <button 
+                                onClick={() => {
+                                    setShowAiMenu(false);
+                                    setIsSettingsOpen(true);
+                                }}
+                                className="text-indigo-500 hover:text-indigo-600 p-1 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/50"
+                                title="管理指令"
+                            >
+                                <SettingsIcon className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          
+                          {customPrompts.length > 0 ? (
+                            customPrompts.map(prompt => (
+                                <button 
+                                    key={prompt.id}
+                                    onClick={() => handleAiAction(AIActionType.CUSTOM, prompt)}
+                                    className="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-indigo-600 dark:hover:text-indigo-400 truncate"
+                                >
+                                    {prompt.name}
+                                </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-2 text-xs text-gray-500 italic">暂无自定义指令</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                 </div>
 
                  {/* Favorite Button (Desktop) */}
                  <button
@@ -957,23 +943,132 @@ export default function App() {
              <p className="text-lg font-medium text-gray-400 dark:text-gray-500">选择一个笔记或创建一个新笔记</p>
           </div>
         )}
-        {/* Floating Action Button for New Note (only in note views) */}
-        {viewFilter !== 'todos' && (
-          <button
+
+        {/* Floating Action Button for New Note */}
+        <button
           onClick={handleCreateNote}
           className="absolute bottom-8 right-8 bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 z-10"
         >
           <PlusIcon className="w-6 h-6" />
         </button>
-        )}
       </div>
 
+      {/* Settings Modal */}
+      {isSettingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-lg overflow-hidden border border-gray-200 dark:border-gray-800 flex flex-col max-h-[90vh]">
+                <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center">
+                    <h2 className="text-lg font-bold text-gray-800 dark:text-gray-100">自定义 AI 指令</h2>
+                    <button 
+                        onClick={() => setIsSettingsOpen(false)}
+                        className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                    >
+                        <XIcon className="w-5 h-5" />
+                    </button>
+                </div>
+                
+                <div className="p-4 overflow-y-auto flex-1">
+                    {/* Add New Form */}
+                    <div className="bg-gray-50 dark:bg-gray-800/50 p-4 rounded-lg mb-6 border border-gray-100 dark:border-gray-800">
+                        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 uppercase tracking-wide">添加新指令</h3>
+                        <div className="space-y-3">
+                            <div>
+                                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">指令名称</label>
+                                <input 
+                                    type="text" 
+                                    value={newPromptName}
+                                    onChange={(e) => setNewPromptName(e.target.value)}
+                                    placeholder="例如：翻译成日文"
+                                    className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                                    指令模板 <span className="text-indigo-500">(使用 {"{{text}}"} 代表选中内容)</span>
+                                </label>
+                                <textarea 
+                                    value={newPromptTemplate}
+                                    onChange={(e) => setNewPromptTemplate(e.target.value)}
+                                    placeholder="例如：请将以下内容翻译成日文：\n\n{{text}}"
+                                    rows={3}
+                                    className="w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">执行方式</label>
+                                <div className="flex space-x-4">
+                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                        <input 
+                                            type="radio" 
+                                            name="actionType" 
+                                            value="append" 
+                                            checked={newPromptAction === 'append'}
+                                            onChange={() => setNewPromptAction('append')}
+                                            className="text-indigo-600 focus:ring-indigo-500" 
+                                        />
+                                        <span className="text-sm text-gray-700 dark:text-gray-300">追加到末尾</span>
+                                    </label>
+                                    <label className="flex items-center space-x-2 cursor-pointer">
+                                        <input 
+                                            type="radio" 
+                                            name="actionType" 
+                                            value="replace" 
+                                            checked={newPromptAction === 'replace'}
+                                            onChange={() => setNewPromptAction('replace')}
+                                            className="text-indigo-600 focus:ring-indigo-500" 
+                                        />
+                                        <span className="text-sm text-gray-700 dark:text-gray-300">替换原文</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={handleAddCustomPrompt}
+                                disabled={!newPromptName.trim() || !newPromptTemplate.trim()}
+                                className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:cursor-not-allowed text-white rounded-md text-sm font-medium transition-colors"
+                            >
+                                添加指令
+                            </button>
+                        </div>
+                    </div>
 
+                    {/* List */}
+                    <div>
+                        <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 uppercase tracking-wide">已保存指令</h3>
+                        {customPrompts.length === 0 ? (
+                            <p className="text-sm text-gray-400 text-center py-4">暂无自定义指令</p>
+                        ) : (
+                            <ul className="space-y-2">
+                                {customPrompts.map(prompt => (
+                                    <li key={prompt.id} className="flex justify-between items-center p-3 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-lg group">
+                                        <div>
+                                            <div className="font-medium text-sm text-gray-900 dark:text-gray-100">{prompt.name}</div>
+                                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                                {prompt.actionType === 'replace' ? '替换原文' : '追加内容'}
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => handleDeleteCustomPrompt(prompt.id)}
+                                            className="text-gray-400 hover:text-red-500 p-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                            title="删除"
+                                        >
+                                            <TrashIcon className="w-4 h-4" />
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+      )}
+      
       {/* Click outside listeners */}
-      {(showExportMenu || showGlobalMenu || showSortMenu) && (
+      {(showAiMenu || showExportMenu || showGlobalMenu || showSortMenu) && (
         <div 
           className="absolute inset-0 z-40 bg-transparent" 
           onClick={() => {
+            setShowAiMenu(false);
             setShowExportMenu(false);
             setShowGlobalMenu(false);
             setShowSortMenu(false);
