@@ -4,7 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MindSpace 笔记</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              gray: {
+                850: '#1f2937',
+                950: '#030712',
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
       body {
@@ -25,6 +41,13 @@
       ::-webkit-scrollbar-thumb:hover {
         background: #d4d4d8;
       }
+      /* Dark mode scrollbar */
+      .dark ::-webkit-scrollbar-thumb {
+        background: #4b5563;
+      }
+      .dark ::-webkit-scrollbar-thumb:hover {
+        background: #6b7280;
+      }
     </style>
   <script type="importmap">
 {
@@ -32,12 +55,14 @@
     "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
     "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
     "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0"
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "marked": "https://esm.sh/marked@12.0.0",
+    "jszip": "https://esm.sh/jszip@3.10.1"
   }
 }
 </script>
 </head>
-  <body class="bg-gray-50 text-gray-900 overflow-hidden h-screen w-screen">
+  <body class="bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 overflow-hidden h-screen w-screen transition-colors duration-200">
     <div id="root" class="h-full w-full"></div>
   </body>
 </html>

@@ -29,6 +29,17 @@ export const performAIAction = async (
     case AIActionType.GENERATE_TITLE:
       prompt = `请为以下笔记内容生成一个简短、吸引人的标题（最多 15 个汉字）。只返回标题文本，不要加引号：\n\n${text}`;
       break;
+    case AIActionType.CUSTOM:
+      if (context) {
+        if (context.includes('{{text}}')) {
+          prompt = context.replace('{{text}}', text);
+        } else {
+          prompt = `${context}\n\n${text}`;
+        }
+      } else {
+        prompt = text;
+      }
+      break;
     default:
       return text;
   }
