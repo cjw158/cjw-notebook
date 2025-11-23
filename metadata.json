@@ -1,0 +1,5 @@
+{
+  "name": "MindSpace 笔记",
+  "description": "一款专注于极简设计的 AI 增强型桌面笔记应用。具备自动保存、本地存储以及 Gemini 驱动的内容辅助功能。",
+  "requestFramePermissions": []
+}
