@@ -790,7 +790,8 @@ export default function App() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-full bg-white dark:bg-gray-950 relative transition-colors duration-200">        {viewFilter === 'todos' ? (
+      <div className="flex-1 flex flex-col h-full bg-white dark:bg-gray-950 relative transition-colors duration-200">
+        {viewFilter === 'todos' ? (
           // Todo Input Area
           <div className="flex-1 flex flex-col p-8">
             <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-6">待办事项</h2>
